@@ -245,6 +245,8 @@ poll_ready (MMBaseModem *modem,
         return;
     }
 
+    if (self->priv->connect_pending_id)
+        g_source_remove (self->priv->connect_pending_id);
     self->priv->connect_pending_id = g_timeout_add_seconds (1,
                                                             (GSourceFunc)poll_timeout_cb,
                                                             self);
@@ -324,6 +326,8 @@ activate_ready (MMBaseModem *modem,
     }
 
     /* We will now setup a timeout to poll for the status */
+    if (self->priv->connect_pending_id)
+        g_source_remove (self->priv->connect_pending_id);
     self->priv->connect_pending_id = g_timeout_add_seconds (1,
                                                             (GSourceFunc)poll_timeout_cb,
                                                             self);
