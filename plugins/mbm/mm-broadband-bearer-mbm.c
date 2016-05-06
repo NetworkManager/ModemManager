@@ -46,6 +46,7 @@ G_DEFINE_TYPE (MMBroadbandBearerMbm, mm_broadband_bearer_mbm, MM_TYPE_BROADBAND_
 
 struct _MMBroadbandBearerMbmPrivate {
     gpointer connect_pending;
+    gpointer disconnect_pending;
     guint connect_pending_id;
     gulong connect_cancellable_id;
 };
@@ -89,12 +90,12 @@ disconnect_enap_ready (MMBaseModem *modem,
     /* Ignore errors for now */
     mm_base_modem_at_command_full_finish (modem, res, &error);
     if (error) {
+        MM_BROADBAND_BEARER_MBM (modem)->priv->disconnect_pending = NULL;
         mm_dbg ("Disconnection failed (not fatal): %s", error->message);
         g_error_free (error);
+        g_simple_async_result_set_op_res_gboolean (ctx->result, TRUE);
+        disconnect_context_complete_and_free (ctx);
     }
-
-    g_simple_async_result_set_op_res_gboolean (ctx->result, TRUE);
-    disconnect_context_complete_and_free (ctx);
 }
 
 static void
@@ -120,6 +121,7 @@ disconnect_3gpp (MMBroadbandBearer *self,
                                              user_data,
                                              disconnect_3gpp);
 
+    MM_BROADBAND_BEARER_MBM (self)->priv->disconnect_pending = ctx;
     mm_base_modem_at_command_full (MM_BASE_MODEM (modem),
                                    primary,
                                    "*ENAP=0",
@@ -202,17 +204,58 @@ report_connection_status (MMBaseBearer *bearer,
                           MMBearerConnectionStatus status)
 {
     MMBroadbandBearerMbm *self = MM_BROADBAND_BEARER_MBM (bearer);
-    Dial3gppContext *ctx;
 
     g_assert (status == MM_BEARER_CONNECTION_STATUS_CONNECTED ||
               status == MM_BEARER_CONNECTION_STATUS_DISCONNECTED);
 
-    /* Recover context (if any) and remove both cancellation and timeout (if any)*/
-    ctx = self->priv->connect_pending;
-    self->priv->connect_pending = NULL;
 
-    /* Connection status reported but no connection attempt? */
-    if (!ctx) {
+    if (self->priv->connect_pending) {
+        Dial3gppContext *ctx;
+
+        /* Recover context (if any) and remove both cancellation and timeout (if any)*/
+        ctx = self->priv->connect_pending;
+        self->priv->connect_pending = NULL;
+
+        if (self->priv->connect_pending_id) {
+            g_source_remove (self->priv->connect_pending_id);
+            self->priv->connect_pending_id = 0;
+        }
+
+        if (self->priv->connect_cancellable_id) {
+            g_cancellable_disconnect (ctx->cancellable,
+                                      self->priv->connect_cancellable_id);
+            self->priv->connect_cancellable_id = 0;
+        }
+
+        /* Reporting connected */
+        if (status == MM_BEARER_CONNECTION_STATUS_CONNECTED) {
+            g_simple_async_result_set_op_res_gpointer (ctx->result,
+                                                       g_object_ref (ctx->data),
+                                                       (GDestroyNotify)g_object_unref);
+            dial_3gpp_context_complete_and_free (ctx);
+            return;
+        }
+
+        /* Reporting disconnected */
+        g_simple_async_result_set_error (ctx->result,
+                                         MM_CORE_ERROR,
+                                         MM_CORE_ERROR_FAILED,
+                                         "Call setup failed");
+        dial_3gpp_context_complete_and_free (ctx);
+    } else if (self->priv->disconnect_pending) {
+        /* Finished disconnecting */
+        DisconnectContext *ctx;
+
+        ctx = self->priv->disconnect_pending;
+        self->priv->disconnect_pending = NULL;
+
+        if (status != MM_BEARER_CONNECTION_STATUS_DISCONNECTED)
+            mm_dbg ("Disconnection failed (not fatal)");
+
+        g_simple_async_result_set_op_res_gboolean (ctx->result, TRUE);
+        disconnect_context_complete_and_free (ctx);
+    } else {
+        /* Connection status reported but no connection attempt? */
         g_assert (self->priv->connect_pending_id == 0);
 
         mm_dbg ("Received spontaneous *E2NAP (%s)",
@@ -226,34 +269,8 @@ report_connection_status (MMBaseBearer *bearer,
                 status);
         }
         return;
-    }
 
-    if (self->priv->connect_pending_id) {
-        g_source_remove (self->priv->connect_pending_id);
-        self->priv->connect_pending_id = 0;
     }
-
-    if (self->priv->connect_cancellable_id) {
-        g_cancellable_disconnect (ctx->cancellable,
-                                  self->priv->connect_cancellable_id);
-        self->priv->connect_cancellable_id = 0;
-    }
-
-    /* Reporting connected */
-    if (status == MM_BEARER_CONNECTION_STATUS_CONNECTED) {
-        g_simple_async_result_set_op_res_gpointer (ctx->result,
-                                                   g_object_ref (ctx->data),
-                                                   (GDestroyNotify)g_object_unref);
-        dial_3gpp_context_complete_and_free (ctx);
-        return;
-    }
-
-    /* Reporting disconnected */
-    g_simple_async_result_set_error (ctx->result,
-                                     MM_CORE_ERROR,
-                                     MM_CORE_ERROR_FAILED,
-                                     "Call setup failed");
-    dial_3gpp_context_complete_and_free (ctx);
 }
 
 static void
