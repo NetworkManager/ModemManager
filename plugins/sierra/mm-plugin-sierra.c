@@ -80,6 +80,42 @@ create_modem (MMPlugin *self,
                                                   product));
 }
 
+gboolean
+grab_port (MMPlugin *self,
+           MMBaseModem *modem,
+           MMPortProbe *probe,
+           GError **error)
+{
+    MMPortSerialAtFlag pflags = MM_PORT_SERIAL_AT_FLAG_NONE;
+    GUdevDevice *port;
+    const gchar *subsys;
+    const gchar *name;
+
+    port = mm_port_probe_peek_port (probe);
+    subsys = mm_port_probe_get_port_subsys (probe);
+    name = mm_port_probe_get_port_name (probe);
+
+    if (g_strcmp0 (g_udev_device_get_subsystem (port), "net") == 0 &&
+        g_strcmp0 (g_udev_device_get_property (port, "DEVTYPE"), "wwan") != 0 &&
+        g_strcmp0 (mm_device_utils_get_port_driver (port), "qmi_wwan") != 0) {
+        g_set_error (error,
+                     MM_CORE_ERROR,
+                     MM_CORE_ERROR_UNSUPPORTED,
+                     "Cannot add port '%s/%s', not the QMI data interface",
+                     subsys,
+                     name);
+        return FALSE;
+    }
+
+    return mm_base_modem_grab_port (modem,
+                                    subsys,
+                                    name,
+                                    mm_port_probe_get_parent_path (probe),
+                                    mm_port_probe_get_port_type (probe),
+                                    pflags,
+                                    error);
+}
+
 /*****************************************************************************/
 
 G_MODULE_EXPORT MMPlugin *
@@ -113,4 +149,5 @@ mm_plugin_sierra_class_init (MMPluginSierraClass *klass)
     MMPluginClass *plugin_class = MM_PLUGIN_CLASS (klass);
 
     plugin_class->create_modem = create_modem;
+    plugin_class->grab_port = grab_port;
 }
